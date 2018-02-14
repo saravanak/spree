@@ -339,13 +339,15 @@ module Spree
 
     def transfer_to_location(variant, quantity, stock_location)
       raise ArgumentError if quantity <= 0
+      raise ArgumentError unless include?(variant)
+      unit_to_split = inventory_units_for(variant).first
+      raise ArgumentError if quantity >= unit_to_split.quantity
 
       transaction do
-        new_shipment = order.shipments.create!(stock_location: stock_location)
-
-        order.contents.remove(variant, quantity, shipment: self)
-        order.contents.add(variant, quantity, shipment: new_shipment)
-        order.create_tax_charge!
+        new_shipment = order.shipments.create!(stock_location: stock_location, order: order)
+        split_inventory_unit = unit_to_split.split_inventory!(quantity)
+        split_inventory_unit.shipment = new_shipment
+        split_inventory_unit.save
         order.update_with_updater!
 
         refresh_rates

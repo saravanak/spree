@@ -12,8 +12,9 @@ describe Spree::Shipment, type: :model do
                              touch_later: false
   end
   let(:shipping_method) { create(:shipping_method, name: 'UPS') }
+  let(:stock_location) { create(:stock_location) }
   let(:shipment) do
-    shipment = Spree::Shipment.new(cost: 1, state: 'pending', stock_location: create(:stock_location))
+    shipment = Spree::Shipment.new(cost: 1, state: 'pending', stock_location: stock_location)
     allow(shipment).to receive_messages order: order
     allow(shipment).to receive_messages shipping_method: shipping_method
     shipment.save
@@ -799,6 +800,78 @@ describe Spree::Shipment, type: :model do
       state_change = shipment.state_changes.first
       expect(state_change.previous_state).to eq('pending')
       expect(state_change.next_state).to eq('ready')
+    end
+  end
+
+  context '#transfer_to_location' do
+    quantity_to_order = 100
+    let!(:order) {
+      order = create(:order_with_line_item_quantity, line_items_quantity: quantity_to_order)
+      order.ship_address = create(:address)
+      order.save
+      order
+    }
+    let!(:variant) { order.variants.first }
+    context 'with in stock line items' do
+      let!(:shipment) { create(:flat_rate_shipping, order: order) }
+      let!(:stock_location) { order.shipments.first.stock_location }
+
+      it 'raises ArgumentError if quantity is negative' do
+        expect { shipment.transfer_to_location(variant.id, -1, stock_location) }.to  raise_error(ArgumentError)
+      end
+
+      it 'raises ArgumentError if variant is not found' do
+        expect { shipment.transfer_to_location(create(:variant), -1, stock_location) }.to  raise_error(ArgumentError)
+      end
+
+      it 'raises ArgumentError if requested quantity is greater than order quantity' do
+        expect { shipment.transfer_to_location(variant, quantity_to_order + 1, stock_location) }.to  raise_error(ArgumentError)
+      end
+
+      it 'raises ArgumentError if requested quantity is equal to order quantity' do
+        expect { shipment.transfer_to_location(variant, quantity_to_order, stock_location) }.to  raise_error(ArgumentError)
+      end
+
+      it 'raises ArgumentError if requested quantity is equal to order quantity' do
+        expect { shipment.transfer_to_location(variant, quantity_to_order, stock_location) }.to  raise_error(ArgumentError)
+      end
+
+      it 'disassociates inventory units upon split' do
+        shipment.transfer_to_location(variant, quantity_to_order - 1, stock_location)
+        all_shipments = order.reload.shipments
+        expect(all_shipments.map(&:backordered?)).to all( be false )
+        expect(shipment.reload.inventory_units.count).to be 1
+        expect(shipment.inventory_units.first.quantity).to be 1
+        expect(shipment.inventory_units.first.state).to eq "on_hand"
+        expect(all_shipments.second.inventory_units.count).to be 1
+        expect(all_shipments.second.inventory_units.first.quantity).to be 99
+        expect(all_shipments.second.inventory_units.first.state).to eq "on_hand"
+        expect(all_shipments.count).to be(2)
+      end
+    end
+    context 'with backordered line items' do
+      let!(:product) {
+        product = variant.product
+        product.master.stock_items.first.adjust_count_on_hand(-10)
+        product.save
+        variant.reload
+        order.reload
+        product
+      }
+      let!(:shipment) { create(:flat_rate_shipping, order: order) }
+      let!(:stock_location) { order.shipments.first.stock_location }
+      it 'disassociates inventory units upon split' do
+        shipment.transfer_to_location(variant, quantity_to_order - 1, stock_location)
+        all_shipments = order.reload.shipments
+        expect(all_shipments.map(&:backordered?)).to all( be true )
+        expect(shipment.reload.inventory_units.count).to be 1
+        expect(shipment.inventory_units.first.quantity).to be 1
+        expect(shipment.inventory_units.first.state).to eq "backordered"
+        expect(all_shipments.second.inventory_units.count).to be 1
+        expect(all_shipments.second.inventory_units.first.quantity).to be 99
+        expect(all_shipments.second.inventory_units.first.state).to eq "backordered"
+        expect(all_shipments.count).to be(2)
+      end
     end
   end
 end
